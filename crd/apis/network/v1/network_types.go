@@ -12,6 +12,9 @@ const (
 	// name corresponding to the network.
 	// e.g. "networking.gke.io.networks/my-network.IP"
 	NetworkResourceKeyPrefix = "networking.gke.io.networks/"
+	// NodePoolPodRangeLabelPrefix is the prefix for the default Pod range
+	// name for the node and it can be different with cluster Pod range
+	NodePoolPodRangeLabelPrefix = "cloud.google.com/gke-np-default-pod-range"
 )
 
 // NetworkType is the type of network.
