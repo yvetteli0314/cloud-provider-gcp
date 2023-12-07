@@ -30,6 +30,13 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// Labels definitions.
+const (
+	// NodePoolPodRangeLabelPrefix is the prefix for the default Pod range
+	// name for the node and it can be different with cluster Pod range
+	NodePoolPodRangeLabelPrefix = "cloud.google.com/gke-np-default-pod-range"
+)
+
 type nodeForConditionPatch struct {
 	Status nodeStatusForPatch `json:"status"`
 }

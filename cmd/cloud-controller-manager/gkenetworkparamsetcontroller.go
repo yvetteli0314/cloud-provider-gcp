@@ -40,16 +40,23 @@ func startGkeNetworkParamsController(ccmConfig *cloudcontrollerconfig.CompletedC
 		return nil, false, err
 	}
 
+	clusterCIDRs, err := validClusterCIDR(ccmConfig)
+	if err != nil {
+		return nil, false, err
+	}
+
 	nwInfFactory := networkinformers.NewSharedInformerFactory(networkClient, 30*time.Second)
 	nwInformer := nwInfFactory.Networking().V1().Networks()
 	gnpInformer := nwInfFactory.Networking().V1().GKENetworkParamSets()
 
 	gkeNetworkParamsetController := gkenetworkparamsetcontroller.NewGKENetworkParamSetController(
+		controllerCtx.InformerFactory.Core().V1().Nodes(),
 		networkClient,
 		gnpInformer,
 		nwInformer,
 		gceCloud,
 		nwInfFactory,
+		clusterCIDRs,
 	)
 
 	go gkeNetworkParamsetController.Run(1, controllerCtx.Stop, controllerCtx.ControllerManagerMetrics)

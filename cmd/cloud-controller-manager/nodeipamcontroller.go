@@ -81,23 +81,11 @@ func startNodeIpamController(ccmConfig *cloudcontrollerconfig.CompletedConfig, n
 	// the CloudAllocator ipam does not need service or cluster cidrs since it obtains the data from the cloud directly
 	// for backward compatiblity reasons we don't fail if there are any of those values configured
 	if ipam.CIDRAllocatorType(ccmConfig.ComponentConfig.KubeCloudShared.CIDRAllocatorType) != ipam.CloudAllocatorType {
-		// failure: bad cidrs in config
-		cidrs, dualStack, err := processCIDRs(ccmConfig.ComponentConfig.KubeCloudShared.ClusterCIDR)
+		// process CIDR from config and validate with stack type
+		clusterCIDRs, err := validClusterCIDR(ccmConfig)
 		if err != nil {
 			return nil, false, err
 		}
-		clusterCIDRs = cidrs
-
-		// failure: more than one cidr but they are not configured as dual stack
-		if len(clusterCIDRs) > 1 && !dualStack {
-			return nil, false, fmt.Errorf("len of ClusterCIDRs==%v and they are not configured as dual stack (at least one from each IPFamily", len(clusterCIDRs))
-		}
-
-		// failure: more than cidrs is not allowed even with dual stack
-		if len(clusterCIDRs) > 2 {
-			return nil, false, fmt.Errorf("len of clusters is:%v > more than max allowed of 2", len(clusterCIDRs))
-		}
-
 		// service cidr processing
 		if len(strings.TrimSpace(nodeIPAMConfig.ServiceCIDR)) != 0 {
 			_, serviceCIDR, err = net.ParseCIDR(nodeIPAMConfig.ServiceCIDR)
@@ -159,6 +147,27 @@ func startNodeIpamController(ccmConfig *cloudcontrollerconfig.CompletedConfig, n
 	nwInfFactory.Start(ctx.Stop)
 	go nodeIpamController.Run(ctx.Stop, ctx.ControllerManagerMetrics)
 	return nil, true, nil
+}
+
+// validClusterCIDR process CIDR form config and validates the cluster CIDR
+// with stack type and returns a list of typed cidrs and error
+func validClusterCIDR(ccmConfig *cloudcontrollerconfig.CompletedConfig) ([]*net.IPNet, error) {
+	// failure: bad cidrs in config
+	clusterCIDRs, dualStack, err := processCIDRs(ccmConfig.ComponentConfig.KubeCloudShared.ClusterCIDR)
+	if err != nil {
+		return nil, err
+	}
+
+	// failure: more than one cidr but they are not configured as dual stack
+	if len(clusterCIDRs) > 1 && !dualStack {
+		return nil, fmt.Errorf("len of ClusterCIDRs==%v and they are not configured as dual stack (at least one from each IPFamily", len(clusterCIDRs))
+	}
+
+	// failure: more than cidrs is not allowed even with dual stack
+	if len(clusterCIDRs) > 2 {
+		return nil, fmt.Errorf("len of clusters is:%v > more than max allowed of 2", len(clusterCIDRs))
+	}
+	return clusterCIDRs, nil
 }
 
 // processCIDRs is a helper function that works on a comma separated cidrs and returns
