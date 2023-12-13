@@ -328,9 +328,17 @@ func (ca *cloudCIDRAllocator) updateCIDRAllocation(nodeName string) error {
 	// nodes in clusters WITHOUT multi-networking are expected to have
 	// only 1 network-interface and 1 alias IPv4 range or/and 1 IPv6 address
 	// multi-network cluster may have 1 interface with multiple alias
-	if len(instance.NetworkInterfaces) == 1 &&
+	multiNetworkingDisabled := len(instance.NetworkInterfaces) == 1 &&
 		(len(instance.NetworkInterfaces[0].AliasIpRanges) == 1 ||
-			ca.cloud.GetIPV6Address(instance.NetworkInterfaces[0]) != nil) {
+			ca.cloud.GetIPV6Address(instance.NetworkInterfaces[0]) != nil)
+
+	// get node default labels for multi-networking enabled clusters
+	// - if node labels exist, get cidrStrings directly and update Node.Spec.PodCIDR(s)
+	// - Otherwise, keep the old way using performMultiNetworkCIDRAllocation to
+	// get cidrStrings by comparing the “default” Network against the GNP object
+	hasNodeLabels, defaultSubnet, defaultPodRange := getNodeDefaultLabels(node)
+
+	if multiNetworkingDisabled {
 		// with 1 alias IPv4 range on single IPv4 or dual stack clusters
 		if len(instance.NetworkInterfaces[0].AliasIpRanges) == 1 {
 			cidrStrings = append(cidrStrings, instance.NetworkInterfaces[0].AliasIpRanges[0].IpCidrRange)
@@ -341,40 +349,31 @@ func (ca *cloudCIDRAllocator) updateCIDRAllocation(nodeName string) error {
 			cidrStrings = append(cidrStrings, ipv6Addr.String())
 		}
 	} else {
-		// multi-networking enabled clusters
-		cidrStrings, err = ca.performMultiNetworkCIDRAllocation(node, instance.NetworkInterfaces)
+		if hasNodeLabels {
+			cidrStrings = ca.getDefaultNwCIDRs(node, instance.NetworkInterfaces, defaultSubnet, defaultPodRange)
+		}
+	}
+
+	// update Node.Spec.PodCIDR(s) right away with cidrStrings
+	if multiNetworkingDisabled || !multiNetworkingDisabled && hasNodeLabels {
+		if err = ca.updateNodePodCIDRWithCidrStrings(oldNode, node, cidrStrings); err != nil {
+			return err
+		}
+	}
+	// update Node.Spec.PodCIDR(s) after performing multiNetworkCIDRAllocation
+	if !multiNetworkingDisabled {
+		cidrStrings, err = ca.performMultiNetworkCIDRAllocation(node, instance.NetworkInterfaces, hasNodeLabels)
 		if err != nil {
 			nodeutil.RecordNodeStatusChange(ca.recorder, node, "CIDRNotAvailable")
 			return fmt.Errorf("failed to get cidr(s) from provider: %v", err)
 		}
-	}
-	if len(cidrStrings) == 0 {
-		nodeutil.RecordNodeStatusChange(ca.recorder, node, "CIDRNotAvailable")
-		return fmt.Errorf("failed to allocate cidr: Node %v has no CIDRs", node.Name)
-	}
-	// Can have at most 2 ips (one for v4 and one for v6)
-	if len(cidrStrings) > 2 {
-		klog.InfoS("Got more than 2 ips, truncating to 2", "cidrStrings", cidrStrings)
-		cidrStrings = cidrStrings[:2]
-	}
-
-	cidrs, err := netutils.ParseCIDRs(cidrStrings)
-	if err != nil {
-		return fmt.Errorf("failed to parse strings %v as CIDRs: %v", cidrStrings, err)
-	}
-	if len(cidrs) > 1 {
-		if dualStack, _ := netutils.IsDualStackCIDRs(cidrs); !dualStack {
-			return fmt.Errorf("err: IPs are not dual stack, CIDRS: %v", cidrStrings)
+		if !hasNodeLabels {
+			if err = ca.updateNodePodCIDRWithCidrStrings(oldNode, node, cidrStrings); err != nil {
+				return err
+			}
 		}
 	}
 
-	node.Spec.PodCIDR = cidrStrings[0]
-	node.Spec.PodCIDRs = cidrStrings
-
-	err = ca.updateNodeCIDR(node, oldNode)
-	if err != nil {
-		return err
-	}
 	if !reflect.DeepEqual(node.Annotations, oldNode.Annotations) {
 		// retain old north interfaces annotation
 		var oldNorthInterfacesAnnotation networkv1.NorthInterfacesAnnotation
@@ -407,6 +406,34 @@ func (ca *cloudCIDRAllocator) updateCIDRAllocation(nodeName string) error {
 		}
 	}
 	return err
+}
+
+// updateNodePodCIDRWithCidrStrings update the Node object with Spec.PodCIDR(s),
+// returns error if cidrStrings is not valid or fails to update the Node object
+func (ca *cloudCIDRAllocator) updateNodePodCIDRWithCidrStrings(oldNode *v1.Node, node *v1.Node, cidrStrings []string) error {
+	if len(cidrStrings) == 0 {
+		nodeutil.RecordNodeStatusChange(ca.recorder, node, "CIDRNotAvailable")
+		return fmt.Errorf("failed to allocate cidr: Node %v has no CIDRs", node.Name)
+	}
+	// Can have at most 2 ips (one for v4 and one for v6)
+	if len(cidrStrings) > 2 {
+		klog.InfoS("Got more than 2 ips, truncating to 2", "cidrStrings", cidrStrings)
+		cidrStrings = cidrStrings[:2]
+	}
+
+	cidrs, err := netutils.ParseCIDRs(cidrStrings)
+	if err != nil {
+		return fmt.Errorf("failed to parse strings %v as CIDRs: %v", cidrStrings, err)
+	}
+	if len(cidrs) > 1 {
+		if dualStack, _ := netutils.IsDualStackCIDRs(cidrs); !dualStack {
+			return fmt.Errorf("err: IPs are not dual stack, CIDRS: %v", cidrStrings)
+		}
+	}
+	node.Spec.PodCIDR = cidrStrings[0]
+	node.Spec.PodCIDRs = cidrStrings
+
+	return ca.updateNodeCIDR(node, oldNode)
 }
 
 func (ca *cloudCIDRAllocator) setNetworkCondition(node *v1.Node) {
